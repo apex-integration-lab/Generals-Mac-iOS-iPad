@@ -1,7 +1,5 @@
-git_url "https://github.com/aaron-nanoclaw/ios-match"
+git_url "https://github.com/apex-integration-lab/ios-match"
 storage_mode "git"
 type "appstore"
 app_identifier ["com.aaron.generalszh"]
 team_id "LMFTNJ7TE4"
-
-# Authentication via App Store Connect API key (set ASC_* env vars or api_key_path)
