@@ -1,46 +1,80 @@
-name: Build iOS (TestFlight)
+name: iOS release
 
 permissions:
   contents: read
 
 on:
   workflow_dispatch:
-  push:
-    branches: [main]
-    paths:
-      - 'GeneralsMD/**'
-      - 'GeneralsZH/**'
-      - 'Core/**'
-      - 'ios/**'
-      - 'fastlane/**'
-      - 'scripts/build/ios/**'
+    inputs:
+      release_target:
+        description: Upload a new TestFlight build or submit a processed build to App Store review
+        required: true
+        default: testflight
+        type: choice
+        options:
+          - testflight
+          - appstore
+      app_version:
+        description: Marketing version already configured in App Store Connect
+        required: true
+        default: "1.04"
+        type: string
+      build_number:
+        description: Processed TestFlight build number (required only for appstore)
+        required: false
+        type: string
+      automatic_release:
+        description: Release automatically after App Review approval (appstore only)
+        required: true
+        default: false
+        type: boolean
 
 jobs:
   build-ios:
-    name: iOS arm64 → TestFlight
+    name: iOS ${{ inputs.release_target }}
     runs-on: [self-hosted, macos]
     timeout-minutes: 180
 
     env:
       GX_BUNDLE_ID: com.aaron.generalszh
       GX_TEAM_ID: LMFTNJ7TE4
+      GX_APP_VERSION: ${{ inputs.app_version }}
+      GX_BUILD_NUMBER: ${{ github.run_number }}
+      GX_RELEASE_BUILD_NUMBER: ${{ inputs.build_number }}
+      GX_AUTOMATIC_RELEASE: ${{ inputs.automatic_release }}
       MATCH_PASSWORD: ${{ secrets.MATCH_PASSWORD }}
-      MATCH_GIT_BASIC_AUTHORIZATION: ${{ secrets.MATCH_GIT_TOKEN }}
-      ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
-      ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
-      ASC_KEY_CONTENT: ${{ secrets.ASC_KEY_CONTENT }}
+      APP_STORE_CONNECT_API_KEY_ID: ${{ secrets.APP_STORE_CONNECT_API_KEY_ID }}
+      APP_STORE_CONNECT_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
+      APP_STORE_CONNECT_API_KEY_BASE64: ${{ secrets.APP_STORE_CONNECT_API_KEY_BASE64 }}
 
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
+      - name: Create a short-lived Match repository token
+        id: match-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.MATCH_GITHUB_APP_ID }}
+          private-key: ${{ secrets.MATCH_GITHUB_APP_PRIVATE_KEY }}
+          owner: apex-integration-lab
+          repositories: ios-match
+
+      - name: Configure Match repository access
+        run: |
+          echo "MATCH_GIT_BASIC_AUTHORIZATION=$(printf 'x-access-token:%s' "$MATCH_TOKEN" | base64 | tr -d '\n')" >> "$GITHUB_ENV"
+        env:
+          MATCH_TOKEN: ${{ steps.match-token.outputs.token }}
+
       - name: Setup vcpkg
+        if: inputs.release_target == 'testflight'
         uses: lukka/run-vcpkg@v11
         with:
           vcpkgGitCommitId: 'ffc071e0c08432c60c9b64f003334c0227667931'
 
       - name: Install build dependencies
+        if: inputs.release_target == 'testflight'
         run: |
           brew update
           brew install cmake ninja meson pkg-config glslang sdl3 \
@@ -49,6 +83,7 @@ jobs:
           which xcodegen || brew install xcodegen
 
       - name: Install Vulkan SDK (iOS MoltenVK xcframework)
+        if: inputs.release_target == 'testflight'
         run: |
           VULKAN_ZIP="/tmp/vulkansdk-macos-1.4.341.1.zip"
           VULKAN_URL="https://sdk.lunarg.com/sdk/download/1.4.341.1/mac/vulkansdk-macos-1.4.341.1.zip"
@@ -70,7 +105,12 @@ jobs:
           bundle install --jobs 4 --retry 3
 
       - name: Build + upload to TestFlight
+        if: inputs.release_target == 'testflight'
         env:
           VULKAN_SDK: ${{ env.VULKAN_SDK }}
           VCPKG_ROOT: ${{ env.VCPKG_ROOT }}
         run: bundle exec fastlane beta
+
+      - name: Submit processed TestFlight build to App Store review
+        if: inputs.release_target == 'appstore'
+        run: bundle exec fastlane submit_appstore

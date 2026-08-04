@@ -9,23 +9,37 @@ IOS_DIR      = "ios"
 OUT_DIR      = "build/ios-package"
 
 platform :ios do
+  private_lane :app_store_connect_key do
+    required = %w[
+      APP_STORE_CONNECT_API_KEY_ID
+      APP_STORE_CONNECT_ISSUER_ID
+      APP_STORE_CONNECT_API_KEY_BASE64
+    ]
+    missing = required.reject { |key| ENV[key] && !ENV[key].empty? }
+    UI.user_error!("Missing App Store Connect API-key secrets: #{missing.join(', ')}") unless missing.empty?
+
+    app_store_connect_api_key(
+      key_id:                   ENV.fetch("APP_STORE_CONNECT_API_KEY_ID"),
+      issuer_id:                ENV.fetch("APP_STORE_CONNECT_ISSUER_ID"),
+      key_content:              ENV.fetch("APP_STORE_CONNECT_API_KEY_BASE64"),
+      is_key_content_base64:    true,
+    )
+  end
+
+  private_lane :sync_appstore_signing do |options|
+    match(
+      type:           "appstore",
+      app_identifier: options.fetch(:bundle_id),
+      team_id:        TEAM_ID,
+      readonly:       true,
+    )
+  end
+
   # ── Sync only ─────────────────────────────────────────────────────────────
   desc "Sync App Store distribution cert + provisioning profile via match"
   lane :sync_signing do
     bundle_id = ENV.fetch("GX_BUNDLE_ID", "com.aaron.generalszh")
-    api_key = app_store_connect_api_key(
-      key_id:        ENV["ASC_KEY_ID"],
-      issuer_id:     ENV["ASC_ISSUER_ID"],
-      key_content:   ENV["ASC_KEY_CONTENT"],
-      is_key_content_base64: ENV.fetch("ASC_KEY_IS_BASE64", "false") == "true",
-    )
-    match(
-      type:           "appstore",
-      app_identifier: bundle_id,
-      team_id:        TEAM_ID,
-      readonly:       true,
-      api_key:        api_key,
-    )
+    sync_appstore_signing(bundle_id: bundle_id)
   end
 
   # ── Full build + TestFlight upload ────────────────────────────────────────
@@ -39,19 +53,8 @@ platform :ios do
                 "MoltenVK.xcframework/ios-arm64/MoltenVK.framework"
 
     # 1. Sync App Store distribution cert + provisioning profile
-    api_key = app_store_connect_api_key(
-      key_id:        ENV["ASC_KEY_ID"],
-      issuer_id:     ENV["ASC_ISSUER_ID"],
-      key_content:   ENV["ASC_KEY_CONTENT"],
-      is_key_content_base64: ENV.fetch("ASC_KEY_IS_BASE64", "false") == "true",
-    )
-    match(
-      type:           "appstore",
-      app_identifier: bundle_id,
-      team_id:        TEAM_ID,
-      readonly:       true,
-      api_key:        api_key,
-    )
+    api_key = app_store_connect_key
+    sync_appstore_signing(bundle_id: bundle_id)
 
     # 2. Build C++ engine for arm64-ios
     sh("cmake --preset ios-vulkan 2>&1 | tail -3")
@@ -65,6 +68,10 @@ platform :ios do
 
     # 5. Generate Xcode project + configure manual App Store signing
     sh("cd #{IOS_DIR} && xcodegen generate --quiet")
+    increment_build_number(
+      xcodeproj: "#{IOS_DIR}/#{APP_NAME}.xcodeproj",
+      build_number: ENV.fetch("GX_BUILD_NUMBER"),
+    )
     update_code_signing_settings(
       use_automatic_signing: false,
       path:                  "#{IOS_DIR}/#{APP_NAME}.xcodeproj",
@@ -152,6 +159,22 @@ platform :ios do
       ipa:                             ipa,
       api_key:                         api_key,
       skip_waiting_for_build_processing: true,
+    )
+  end
+
+  desc "Submit a processed TestFlight build to App Store review"
+  lane :submit_appstore do
+    upload_to_app_store(
+      api_key:              app_store_connect_key,
+      app_identifier:       ENV.fetch("GX_BUNDLE_ID", "com.aaron.generalszh"),
+      app_version:          ENV.fetch("GX_APP_VERSION", "1.04"),
+      build_number:         ENV.fetch("GX_RELEASE_BUILD_NUMBER"),
+      skip_binary_upload:   true,
+      skip_metadata:        true,
+      skip_screenshots:     true,
+      submit_for_review:    true,
+      automatic_release:    ENV.fetch("GX_AUTOMATIC_RELEASE", "false") == "true",
+      force:                true,
     )
   end
 end

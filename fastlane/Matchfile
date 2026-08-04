@@ -3,3 +3,4 @@ storage_mode "git"
 type "appstore"
 app_identifier ["com.aaron.generalszh"]
 team_id "LMFTNJ7TE4"
+git_basic_authorization ENV["MATCH_GIT_BASIC_AUTHORIZATION"] if ENV["MATCH_GIT_BASIC_AUTHORIZATION"]
