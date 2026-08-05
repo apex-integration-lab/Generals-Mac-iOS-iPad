@@ -45,6 +45,7 @@ platform :ios do
   # ── Full build + TestFlight upload ────────────────────────────────────────
   desc "Build engine, package iOS app, upload to TestFlight (no bundled assets)"
   lane :beta do
+    Dir.chdir(File.expand_path("..", __dir__)) do
     bundle_id = ENV.fetch("GX_BUNDLE_ID", "com.aaron.generalszh")
     derived   = "#{IOS_DIR}/build"
     mvk_root  = ENV.fetch("GX_MOLTENVK_ROOT",
@@ -57,8 +58,8 @@ platform :ios do
     sync_appstore_signing(bundle_id: bundle_id)
 
     # 2. Build C++ engine for arm64-ios
-    sh("cmake --preset ios-vulkan 2>&1 | tail -3")
-    sh("cmake --build #{BUILD_DIR} --target z_generals -j $(sysctl -n hw.ncpu) 2>&1 | tail -5")
+    sh("cmake --preset ios-vulkan")
+    sh("cmake --build #{BUILD_DIR} --target z_generals -j $(sysctl -n hw.ncpu)")
 
     # 3. Fetch pinned MoltenVK (idempotent)
     sh("GX_MOLTENVK_ROOT=#{mvk_root} scripts/build/ios/fetch-moltenvk.sh")
@@ -93,7 +94,7 @@ platform :ios do
         PRODUCT_BUNDLE_IDENTIFIER=#{bundle_id} \
         CODE_SIGN_STYLE=Manual \
         PROVISIONING_PROFILE_SPECIFIER="match AppStore #{bundle_id}" \
-        build 2>&1 | tail -3
+        build
     SH
     shell_app = "#{derived}/Build/Products/Release-iphoneos/#{APP_NAME}.app"
 
@@ -160,6 +161,7 @@ platform :ios do
       api_key:                         api_key,
       skip_waiting_for_build_processing: true,
     )
+    end
   end
 
   desc "Submit a processed TestFlight build to App Store review"
