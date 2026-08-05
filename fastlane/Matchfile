@@ -1,4 +1,5 @@
 git_url "https://github.com/apex-integration-lab/ios-match"
+git_branch "main"
 storage_mode "git"
 type "appstore"
 app_identifier ["com.aaron.generalszh"]
