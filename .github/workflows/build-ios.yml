@@ -44,6 +44,7 @@ jobs:
       GX_BUILD_NUMBER: ${{ github.run_number }}
       GX_RELEASE_BUILD_NUMBER: ${{ inputs.build_number }}
       GX_AUTOMATIC_RELEASE: ${{ inputs.automatic_release }}
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
       MATCH_PASSWORD: ${{ secrets.MATCH_PASSWORD }}
       APP_STORE_CONNECT_API_KEY_ID: ${{ secrets.APP_STORE_CONNECT_API_KEY_ID }}
       APP_STORE_CONNECT_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
@@ -53,6 +54,24 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+
+      - name: Restore Homebrew downloads
+        if: inputs.release_target == 'testflight'
+        uses: actions/cache@v4
+        with:
+          path: ~/Library/Caches/Homebrew
+          key: homebrew-${{ runner.os }}-${{ hashFiles('.github/workflows/build-ios.yml') }}
+          restore-keys: |
+            homebrew-${{ runner.os }}-
+
+      - name: Restore C/C++ compiler cache
+        if: inputs.release_target == 'testflight'
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: ios-ccache-${{ runner.os }}-${{ hashFiles('CMakePresets.json', 'vcpkg.json', 'vcpkg-lock.json') }}
+          restore-keys: |
+            ios-ccache-${{ runner.os }}-
 
       - name: Create a short-lived Match repository token
         id: match-token
@@ -74,6 +93,7 @@ jobs:
         uses: lukka/run-vcpkg@v11
         with:
           vcpkgGitCommitId: '533a5fda5c0646d1771345fb572e759283444d5f'
+          doNotCache: false
 
       - name: Install build dependencies
         if: inputs.release_target == 'testflight'
@@ -81,7 +101,7 @@ jobs:
           brew update
           brew install cmake ninja meson pkg-config glslang sdl3 \
             autoconf autoconf-archive automake libtool ffmpeg \
-            freetype fontconfig
+            freetype fontconfig ccache
           which xcodegen || brew install xcodegen
 
       - name: Install Vulkan SDK (iOS MoltenVK xcframework)
