@@ -32,7 +32,9 @@ on:
 jobs:
   build-ios:
     name: iOS ${{ inputs.release_target }}
-    runs-on: [self-hosted, macos]
+    # This repository is public, so GitHub-hosted macOS capacity is available
+    # without requiring an always-online organization runner.
+    runs-on: macos-latest
     timeout-minutes: 180
 
     env:
