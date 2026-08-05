@@ -7,6 +7,7 @@ APP_NAME     = "GeneralsXZH"
 BUILD_DIR    = "build/ios-vulkan"
 IOS_DIR      = "ios"
 OUT_DIR      = "build/ios-package"
+TESTFLIGHT_INTERNAL_GROUP = "Aaron"
 
 platform :ios do
   private_lane :app_store_connect_key do
@@ -159,7 +160,9 @@ platform :ios do
     upload_to_testflight(
       ipa:                             ipa,
       api_key:                         api_key,
-      skip_waiting_for_build_processing: true,
+      groups:                          [TESTFLIGHT_INTERNAL_GROUP],
+      distribute_external:             false,
+      skip_waiting_for_build_processing: false,
     )
     end
   end
