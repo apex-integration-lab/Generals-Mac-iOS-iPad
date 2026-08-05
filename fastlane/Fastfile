@@ -46,29 +46,28 @@ platform :ios do
   # ── Full build + TestFlight upload ────────────────────────────────────────
   desc "Build engine, package iOS app, upload to TestFlight (no bundled assets)"
   lane :beta do
-    Dir.chdir(File.expand_path("..", __dir__)) do
     bundle_id = ENV.fetch("GX_BUNDLE_ID", "com.aaron.generalszh")
+    api_key = app_store_connect_key
+    sync_appstore_signing(bundle_id: bundle_id)
+
+    Dir.chdir(File.expand_path("..", __dir__)) do
     derived   = "#{IOS_DIR}/build"
     mvk_root  = ENV.fetch("GX_MOLTENVK_ROOT",
                            "#{Dir.home}/GeneralsX/MoltenVK")
     mvk_fw    = "#{mvk_root}/MoltenVK/MoltenVK/dynamic/" \
                 "MoltenVK.xcframework/ios-arm64/MoltenVK.framework"
 
-    # 1. Sync App Store distribution cert + provisioning profile
-    api_key = app_store_connect_key
-    sync_appstore_signing(bundle_id: bundle_id)
-
-    # 2. Build C++ engine for arm64-ios
+    # 1. Build C++ engine for arm64-ios
     sh("cmake --preset ios-vulkan")
     sh("cmake --build #{BUILD_DIR} --target z_generals -j $(sysctl -n hw.ncpu)")
 
-    # 3. Fetch pinned MoltenVK (idempotent)
+    # 2. Fetch pinned MoltenVK (idempotent)
     sh("GX_MOLTENVK_ROOT=#{mvk_root} scripts/build/ios/fetch-moltenvk.sh")
 
-    # 4. Stage Liberation fonts (renamed to arial/courierNew/timesnewroman)
+    # 3. Stage Liberation fonts (renamed to arial/courierNew/timesnewroman)
     sh("scripts/build/ios/stage-fonts.sh")
 
-    # 5. Generate Xcode project + configure manual App Store signing
+    # 4. Generate Xcode project + configure manual App Store signing
     sh("cd #{IOS_DIR} && xcodegen generate --quiet")
     increment_build_number(
       xcodeproj: "#{IOS_DIR}/#{APP_NAME}.xcodeproj",
@@ -83,7 +82,7 @@ platform :ios do
       code_sign_identity:    "Apple Distribution",
     )
 
-    # 6. Build signing shell app (tiny stub exe, real provisioning profile embedded)
+    # 5. Build signing shell app (tiny stub exe, real provisioning profile embedded)
     sh(<<~SH)
       xcodebuild \
         -project #{IOS_DIR}/#{APP_NAME}.xcodeproj \
@@ -99,7 +98,7 @@ platform :ios do
     SH
     shell_app = "#{derived}/Build/Products/Release-iphoneos/#{APP_NAME}.app"
 
-    # 7. Assemble final .app
+    # 6. Assemble final .app
     engine_bin = "#{BUILD_DIR}/GeneralsMD/#{APP_NAME}.app/#{APP_NAME}"
     sh("rm -rf #{OUT_DIR} && mkdir -p #{OUT_DIR}")
     sh("cp -R #{shell_app} #{OUT_DIR}/")
@@ -134,7 +133,7 @@ platform :ios do
     sh("install_name_tool -add_rpath @executable_path/Frameworks "\
        "#{app}/#{APP_NAME} 2>/dev/null || true")
 
-    # 8. Re-sign inside-out with App Store distribution identity
+    # 7. Re-sign inside-out with App Store distribution identity
     sign_id      = "Apple Distribution"
     entitlements = "#{OUT_DIR}/entitlements.plist"
     sh("codesign -d --entitlements - --xml #{shell_app} > #{entitlements} 2>/dev/null")
@@ -146,7 +145,7 @@ platform :ios do
        "--entitlements #{entitlements} #{app}")
     sh("codesign --verify --deep #{app} && echo '  signature OK'")
 
-    # 9. Wrap .app → .ipa
+    # 8. Wrap .app → .ipa
     ipa = File.expand_path("#{OUT_DIR}/#{APP_NAME}.ipa")
     sh(<<~SH)
       rm -rf /tmp/gx-ipa-build
@@ -156,7 +155,7 @@ platform :ios do
       rm -rf /tmp/gx-ipa-build
     SH
 
-    # 10. Upload to TestFlight
+    # 9. Upload to TestFlight
     upload_to_testflight(
       ipa:                             ipa,
       api_key:                         api_key,
