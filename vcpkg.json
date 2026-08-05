@@ -1,6 +1,6 @@
 {
     "$schema": "https://raw.githubusercontent.com/microsoft/vcpkg-tool/main/docs/vcpkg.schema.json",
-    "builtin-baseline": "533a5fda5c0646d1771345fb572e759283444d5f",
+    "builtin-baseline": "8f57207a8a1b96a4a864e11f85d57b0a252b3ac3",
     "dependencies": [
       "zlib",
       "glm",
