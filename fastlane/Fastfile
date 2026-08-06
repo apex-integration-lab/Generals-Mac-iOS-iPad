@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require "shellwords"
+
 default_platform :ios
 
 TEAM_ID      = "LMFTNJ7TE4"
@@ -10,8 +12,29 @@ IOS_DIR      = "ios"
 OUT_DIR      = "build/ios-package"
 TESTFLIGHT_INTERNAL_GROUP = "Aaron"
 
+def match_env_name(bundle_id, suffix)
+  ["sigh", bundle_id, "appstore", suffix].join("_")
+end
+
+def match_profile_path(bundle_id)
+  key = match_env_name(bundle_id, "profile-path")
+  profile = ENV[key]
+  UI.user_error!("Match did not set #{key}") if profile.to_s.empty?
+  UI.user_error!("Match profile not found at #{profile}") unless File.file?(profile)
+  profile
+end
+
+def match_certificate_name(bundle_id)
+  ENV.fetch(match_env_name(bundle_id, "certificate-name"), "Apple Distribution")
+end
+
 platform :ios do
   private_lane :app_store_connect_key do
+    if ENV.fetch("GX_USE_APPLE_ID_AUTH", "false") == "true"
+      UI.message("Using interactive Apple ID authentication for App Store Connect")
+      next nil
+    end
+
     required = %w[
       APP_STORE_CONNECT_API_KEY_ID
       APP_STORE_CONNECT_ISSUER_ID
@@ -87,7 +110,7 @@ platform :ios do
       code_sign_identity:    "Apple Distribution",
     )
 
-    # 5. Build signing shell app (tiny stub exe, real provisioning profile embedded)
+    # 5. Build unsigned shell app; final signing uses the exact Match profile below.
     sh(<<~SH)
       xcodebuild \
         -project #{xcodeproj} \
@@ -97,20 +120,24 @@ platform :ios do
         -derivedDataPath #{derived} \
         DEVELOPMENT_TEAM=#{TEAM_ID} \
         PRODUCT_BUNDLE_IDENTIFIER=#{bundle_id} \
-        CODE_SIGN_STYLE=Manual \
-        PROVISIONING_PROFILE_SPECIFIER="match AppStore #{bundle_id}" \
+        CODE_SIGNING_ALLOWED=NO \
+        CODE_SIGNING_REQUIRED=NO \
+        CODE_SIGN_IDENTITY= \
         build
     SH
     shell_app = "#{derived}/Build/Products/Release-iphoneos/#{APP_NAME}.app"
+    profile_path = match_profile_path(bundle_id)
 
     # 6. Assemble final .app
     engine_bin = "#{BUILD_DIR}/GeneralsMD/#{APP_NAME}.app/#{APP_NAME}"
     sh("rm -rf #{OUT_DIR} && mkdir -p #{OUT_DIR}")
     sh("cp -R #{shell_app} #{OUT_DIR}/")
     app = "#{OUT_DIR}/#{APP_NAME}.app"
+    embedded_profile = File.join(app, "embedded.mobileprovision")
 
     # Replace stub exe with real engine binary
     sh("cp #{engine_bin} #{app}/#{APP_NAME}")
+    sh("cp #{profile_path.shellescape} #{embedded_profile.shellescape}")
 
     # Embed runtime dylibs
     sh("mkdir -p #{app}/Frameworks")
@@ -139,9 +166,12 @@ platform :ios do
        "#{app}/#{APP_NAME} 2>/dev/null || true")
 
     # 7. Re-sign inside-out with App Store distribution identity
-    sign_id      = "Apple Distribution"
+    sign_id      = match_certificate_name(bundle_id)
     entitlements = "#{OUT_DIR}/entitlements.plist"
-    sh("codesign -d --entitlements - --xml #{shell_app} > #{entitlements} 2>/dev/null")
+    profile_plist = "#{OUT_DIR}/profile.plist"
+    sh("security cms -D -i #{profile_path.shellescape} > #{profile_plist.shellescape}")
+    sh("/usr/libexec/PlistBuddy -x -c \"Print :Entitlements\" "\
+       "#{profile_plist.shellescape} > #{entitlements.shellescape}")
     sh("find #{app}/Frameworks -name '*.dylib' "\
        "-exec codesign --force --sign '#{sign_id}' --timestamp=none {} \\;")
     sh("codesign --force --sign '#{sign_id}' --timestamp=none "\
@@ -161,20 +191,21 @@ platform :ios do
     SH
 
     # 9. Upload to TestFlight
-    upload_to_testflight(
+    upload_options = {
       ipa:                             ipa,
-      api_key:                         api_key,
       groups:                          [TESTFLIGHT_INTERNAL_GROUP],
       distribute_external:             false,
       skip_waiting_for_build_processing: false,
-    )
+    }
+    upload_options[:api_key] = api_key if api_key
+    upload_to_testflight(upload_options)
     end
   end
 
   desc "Submit a processed TestFlight build to App Store review"
   lane :submit_appstore do
-    upload_to_app_store(
-      api_key:              app_store_connect_key,
+    api_key = app_store_connect_key
+    upload_options = {
       app_identifier:       ENV.fetch("GX_BUNDLE_ID", "com.aaron.generalszh"),
       app_version:          ENV.fetch("GX_APP_VERSION", "1.04"),
       build_number:         ENV.fetch("GX_RELEASE_BUILD_NUMBER"),
@@ -184,6 +215,8 @@ platform :ios do
       submit_for_review:    true,
       automatic_release:    ENV.fetch("GX_AUTOMATIC_RELEASE", "false") == "true",
       force:                true,
-    )
+    }
+    upload_options[:api_key] = api_key if api_key
+    upload_to_app_store(upload_options)
   end
 end
