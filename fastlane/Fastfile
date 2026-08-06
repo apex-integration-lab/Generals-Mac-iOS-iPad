@@ -4,6 +4,7 @@ default_platform :ios
 
 TEAM_ID      = "LMFTNJ7TE4"
 APP_NAME     = "GeneralsXZH"
+REPO_ROOT    = File.expand_path("..", __dir__)
 BUILD_DIR    = "build/ios-vulkan"
 IOS_DIR      = "ios"
 OUT_DIR      = "build/ios-package"
@@ -50,7 +51,8 @@ platform :ios do
     api_key = app_store_connect_key
     sync_appstore_signing(bundle_id: bundle_id)
 
-    Dir.chdir(File.expand_path("..", __dir__)) do
+    Dir.chdir(REPO_ROOT) do
+    xcodeproj = File.join(REPO_ROOT, IOS_DIR, "#{APP_NAME}.xcodeproj")
     derived   = "#{IOS_DIR}/build"
     mvk_root  = ENV.fetch("GX_MOLTENVK_ROOT",
                            "#{Dir.home}/GeneralsX/MoltenVK")
@@ -71,13 +73,14 @@ platform :ios do
 
     # 4. Generate Xcode project + configure manual App Store signing
     sh("cd #{IOS_DIR} && xcodegen generate --quiet")
+    UI.user_error!("Xcode project not generated at #{xcodeproj}") unless Dir.exist?(xcodeproj)
     increment_build_number(
-      xcodeproj: "#{IOS_DIR}/#{APP_NAME}.xcodeproj",
+      xcodeproj: xcodeproj,
       build_number: ENV.fetch("GX_BUILD_NUMBER"),
     )
     update_code_signing_settings(
       use_automatic_signing: false,
-      path:                  "#{IOS_DIR}/#{APP_NAME}.xcodeproj",
+      path:                  xcodeproj,
       team_id:               TEAM_ID,
       bundle_identifier:     bundle_id,
       profile_name:          "match AppStore #{bundle_id}",
@@ -87,7 +90,7 @@ platform :ios do
     # 5. Build signing shell app (tiny stub exe, real provisioning profile embedded)
     sh(<<~SH)
       xcodebuild \
-        -project #{IOS_DIR}/#{APP_NAME}.xcodeproj \
+        -project #{xcodeproj} \
         -scheme #{APP_NAME} \
         -configuration Release \
         -destination 'generic/platform=iOS' \
