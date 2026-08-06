@@ -1,10 +1,9 @@
 # XcodeGen spec for the GeneralsXZH iOS wrapper app.
 #
-# This target exists to (a) obtain a provisioning profile + signed bundle via
-# normal Xcode automatic signing, and (b) define the Info.plist the game needs
-# (file sharing for assets, landscape-only, fullscreen). The packaging script
-# (package-ios.sh) then replaces the stub executable with the real z_generals
-# engine binary, embeds the runtime dylibs, and re-signs everything.
+# This target exists to define the signed iOS wrapper that Fastlane archives
+# and exports for TestFlight/App Store delivery. Its post-build phase replaces
+# the stub executable with the real z_generals engine binary and embeds the
+# runtime dylibs before Xcode's normal signing/export path runs.
 # NOTE: the bundle id and development team below are defaults; the packaging
 # script overrides them at build time via GX_BUNDLE_ID / GX_TEAM_ID, so point
 # those at your own Apple Developer account rather than editing this file.
@@ -24,6 +23,9 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: me.ammaar.generalszh
         DEVELOPMENT_TEAM: 7S264298H8
         CODE_SIGN_STYLE: Automatic
+        CURRENT_PROJECT_VERSION: "10"
+        MARKETING_VERSION: "1.04"
+        VERSIONING_SYSTEM: apple-generic
         TARGETED_DEVICE_FAMILY: "1,2"
         INFOPLIST_KEY_UIRequiresFullScreen: YES
         ENABLE_BITCODE: NO
@@ -32,8 +34,8 @@ targets:
       path: Stub/Info.plist
       properties:
         CFBundleDisplayName: Generals ZH
-        CFBundleShortVersionString: "1.04"
-        CFBundleVersion: "10"
+        CFBundleShortVersionString: "$(MARKETING_VERSION)"
+        CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
         UIFileSharingEnabled: true
         LSSupportsOpeningDocumentsInPlace: true
         UIRequiresFullScreen: true
@@ -46,3 +48,58 @@ targets:
           - UIInterfaceOrientationLandscapeRight
         UIApplicationSupportsIndirectInputEvents: true
         NSLocalNetworkUsageDescription: "Used for LAN multiplayer game discovery."
+        NSBluetoothAlwaysUsageDescription: "Used to support Bluetooth game controllers."
+    postBuildScripts:
+      - name: Stage GeneralsX runtime
+        basedOnDependencyAnalysis: false
+        script: |
+          set -eu
+
+          REPO_ROOT="${SRCROOT}/.."
+          CMAKE_BUILD_DIR="${GX_CMAKE_BUILD_DIR:-${REPO_ROOT}/build/ios-vulkan}"
+          APP_DIR="${TARGET_BUILD_DIR}/${WRAPPER_NAME}"
+          FRAMEWORKS_DIR="${APP_DIR}/Frameworks"
+          ENGINE_BIN="${CMAKE_BUILD_DIR}/GeneralsMD/GeneralsXZH.app/GeneralsXZH"
+          DXVK_BUILD="${CMAKE_BUILD_DIR}/_deps/dxvk-build-macos"
+          MVK_ROOT="${GX_MOLTENVK_ROOT:-${HOME}/GeneralsX/MoltenVK}"
+          MVK_FRAMEWORK="${GX_MOLTENVK:-${MVK_ROOT}/MoltenVK/MoltenVK/dynamic/MoltenVK.xcframework/ios-arm64/MoltenVK.framework}"
+
+          copy_required() {
+            src="$1"
+            dest="$2"
+            if [ ! -e "${src}" ]; then
+              echo "error: required iOS runtime input missing: ${src}" >&2
+              exit 1
+            fi
+            rm -rf "${dest}"
+            if [ -d "${src}" ]; then
+              cp -R "${src}" "${dest}"
+            else
+              cp -f "${src}" "${dest}"
+            fi
+          }
+
+          codesign_runtime() {
+            item="$1"
+            if [ "${CODE_SIGNING_ALLOWED:-YES}" = "NO" ] || [ -z "${EXPANDED_CODE_SIGN_IDENTITY:-}" ]; then
+              return
+            fi
+            /usr/bin/codesign --force --sign "${EXPANDED_CODE_SIGN_IDENTITY}" --timestamp=none ${OTHER_CODE_SIGN_FLAGS:-} "${item}"
+          }
+
+          mkdir -p "${APP_DIR}" "${FRAMEWORKS_DIR}"
+          copy_required "${ENGINE_BIN}" "${APP_DIR}/${EXECUTABLE_NAME}"
+          copy_required "${DXVK_BUILD}/src/d3d8/libdxvk_d3d8.0.dylib" "${FRAMEWORKS_DIR}/libdxvk_d3d8.0.dylib"
+          copy_required "${DXVK_BUILD}/src/d3d9/libdxvk_d3d9.0.dylib" "${FRAMEWORKS_DIR}/libdxvk_d3d9.0.dylib"
+          copy_required "${CMAKE_BUILD_DIR}/_deps/sdl3-build/libSDL3.0.dylib" "${FRAMEWORKS_DIR}/libSDL3.0.dylib"
+          copy_required "${CMAKE_BUILD_DIR}/_deps/sdl3_image-build/libSDL3_image.0.dylib" "${FRAMEWORKS_DIR}/libSDL3_image.0.dylib"
+          copy_required "${CMAKE_BUILD_DIR}/_deps/openal_soft-build/libopenal.1.24.2.dylib" "${FRAMEWORKS_DIR}/libopenal.1.dylib"
+          copy_required "${CMAKE_BUILD_DIR}/libgamespy.dylib" "${FRAMEWORKS_DIR}/libgamespy.dylib"
+          copy_required "${MVK_FRAMEWORK}" "${FRAMEWORKS_DIR}/MoltenVK.framework"
+
+          /usr/bin/install_name_tool -add_rpath "@executable_path/Frameworks" "${APP_DIR}/${EXECUTABLE_NAME}" 2>/dev/null || true
+
+          for item in "${FRAMEWORKS_DIR}/"*.dylib "${FRAMEWORKS_DIR}/"*.framework; do
+            [ -e "${item}" ] || continue
+            codesign_runtime "${item}"
+          done

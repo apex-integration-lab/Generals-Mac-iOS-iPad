@@ -1,12 +1,13 @@
 # frozen_string_literal: true
 
-require "shellwords"
-require_relative "signing_identity"
+require_relative "release_config"
+require_relative "upload_auth"
 
 default_platform :ios
 
 TEAM_ID      = "LMFTNJ7TE4"
 APP_NAME     = "GeneralsXZH"
+APP_STORE_APP_ID = "6798353282"
 REPO_ROOT    = File.expand_path("..", __dir__)
 BUILD_DIR    = "build/ios-vulkan"
 IOS_DIR      = "ios"
@@ -17,23 +18,59 @@ def match_env_name(bundle_id, suffix)
   ["sigh", bundle_id, "appstore", suffix].join("_")
 end
 
-def match_profile_path(bundle_id)
-  key = match_env_name(bundle_id, "profile-path")
-  profile = ENV[key]
-  UI.user_error!("Match did not set #{key}") if profile.to_s.empty?
-  UI.user_error!("Match profile not found at #{profile}") unless File.file?(profile)
-  profile
-end
-
 def match_certificate_name(bundle_id)
   ENV.fetch(match_env_name(bundle_id, "certificate-name"), "Apple Distribution")
 end
 
+def match_profile_name(bundle_id)
+  ENV.fetch(match_env_name(bundle_id, "profile-name"), "match AppStore #{bundle_id}")
+end
+
 platform :ios do
-  private_lane :app_store_connect_key do
-    if ENV.fetch("GX_USE_APPLE_ID_AUTH", "false") == "true"
-      UI.message("Using interactive Apple ID authentication for App Store Connect")
-      next nil
+  private_lane :prepare_release_keychain do
+    keychain_name = GeneralsXReleaseConfig.keychain_name
+    keychain_password = GeneralsXReleaseConfig.keychain_password
+    create_keychain(
+      name: keychain_name,
+      password: keychain_password,
+      default_keychain: false,
+      unlock: true,
+      timeout: 3600,
+      lock_when_sleeps: false,
+      lock_after_timeout: false,
+      add_to_search_list: true,
+    )
+
+    keychain_path = lane_context[SharedValues::KEYCHAIN_PATH]
+    keychain_path ||= File.expand_path("~/Library/Keychains/#{keychain_name}-db")
+    {
+      name: keychain_name,
+      password: keychain_password,
+      path: keychain_path,
+    }
+  end
+
+  private_lane :app_store_connect_key do |options|
+    if GeneralsXUploadAuth.apple_id_auth?
+      if options.fetch(:allow_apple_id_upload, false)
+        begin
+          GeneralsXUploadAuth.validate_apple_id_upload_env!(
+            fallback_apple_id: APP_STORE_APP_ID,
+          )
+        rescue GeneralsXUploadAuth::Error => error
+          UI.user_error!(error.message)
+        end
+        UI.important(
+          "Using Apple ID app-specific password upload; TestFlight processing " \
+          "wait and tester group distribution will be skipped.",
+        )
+        next nil
+      end
+
+      UI.user_error!(
+        "GX_USE_APPLE_ID_AUTH=true is only supported for TestFlight binary upload. " \
+        "App Store review submission requires App Store Connect API-key secrets.",
+      )
     end
 
     required = %w[
@@ -53,160 +90,117 @@ platform :ios do
   end
 
   private_lane :sync_appstore_signing do |options|
-    match(
-      type:           "appstore",
-      app_identifier: options.fetch(:bundle_id),
-      team_id:        TEAM_ID,
-      readonly:       true,
+    match_options = GeneralsXReleaseConfig.match_options(
+      bundle_id: options.fetch(:bundle_id),
+      team_id: TEAM_ID,
+      keychain_name: options.fetch(:keychain_name),
+      keychain_password: options.fetch(:keychain_password),
+      api_key: options[:api_key],
     )
+    match(match_options)
   end
 
   # ── Sync only ─────────────────────────────────────────────────────────────
   desc "Sync App Store distribution cert + provisioning profile via match"
   lane :sync_signing do
     bundle_id = ENV.fetch("GX_BUNDLE_ID", "com.aaron.generalszh")
-    sync_appstore_signing(bundle_id: bundle_id)
+    keychain = prepare_release_keychain
+    sync_appstore_signing(
+      bundle_id: bundle_id,
+      keychain_name: keychain.fetch(:name),
+      keychain_password: keychain.fetch(:password),
+    )
   end
 
   # ── Full build + TestFlight upload ────────────────────────────────────────
   desc "Build engine, package iOS app, upload to TestFlight (no bundled assets)"
   lane :beta do
     bundle_id = ENV.fetch("GX_BUNDLE_ID", "com.aaron.generalszh")
-    api_key = app_store_connect_key
-    sync_appstore_signing(bundle_id: bundle_id)
+    api_key = app_store_connect_key(allow_apple_id_upload: true)
+    keychain = prepare_release_keychain
+    sync_appstore_signing(
+      bundle_id: bundle_id,
+      keychain_name: keychain.fetch(:name),
+      keychain_password: keychain.fetch(:password),
+      api_key: api_key,
+    )
 
     Dir.chdir(REPO_ROOT) do
-    xcodeproj = File.join(REPO_ROOT, IOS_DIR, "#{APP_NAME}.xcodeproj")
-    derived   = "#{IOS_DIR}/build"
-    mvk_root  = ENV.fetch("GX_MOLTENVK_ROOT",
-                           "#{Dir.home}/GeneralsX/MoltenVK")
-    mvk_fw    = "#{mvk_root}/MoltenVK/MoltenVK/dynamic/" \
-                "MoltenVK.xcframework/ios-arm64/MoltenVK.framework"
+      xcodeproj = File.join(REPO_ROOT, IOS_DIR, "#{APP_NAME}.xcodeproj")
+      derived   = "#{IOS_DIR}/build"
+      mvk_root  = ENV.fetch("GX_MOLTENVK_ROOT",
+                             "#{Dir.home}/GeneralsX/MoltenVK")
+      mvk_fw    = "#{mvk_root}/MoltenVK/MoltenVK/dynamic/" \
+                  "MoltenVK.xcframework/ios-arm64/MoltenVK.framework"
+      profile_name = match_profile_name(bundle_id)
+      certificate_name = match_certificate_name(bundle_id)
 
-    # 1. Build C++ engine for arm64-ios
-    sh("cmake --preset ios-vulkan "\
-       "-DCMAKE_C_COMPILER_LAUNCHER=ccache "\
-       "-DCMAKE_CXX_COMPILER_LAUNCHER=ccache")
-    sh("cmake --build #{BUILD_DIR} --target z_generals -j $(sysctl -n hw.ncpu)")
+      # 1. Build C++ engine for arm64-ios
+      sh("cmake --preset ios-vulkan "\
+         "-DCMAKE_C_COMPILER_LAUNCHER=ccache "\
+         "-DCMAKE_CXX_COMPILER_LAUNCHER=ccache")
+      sh("cmake --build #{BUILD_DIR} --target z_generals -j $(sysctl -n hw.ncpu)")
 
-    # 2. Fetch pinned MoltenVK (idempotent)
-    sh("GX_MOLTENVK_ROOT=#{mvk_root} scripts/build/ios/fetch-moltenvk.sh")
+      # 2. Fetch pinned MoltenVK (idempotent)
+      sh("GX_MOLTENVK_ROOT=#{mvk_root} scripts/build/ios/fetch-moltenvk.sh")
 
-    # 3. Stage Liberation fonts (renamed to arial/courierNew/timesnewroman)
-    sh("scripts/build/ios/stage-fonts.sh")
+      # 3. Stage Liberation fonts (renamed to arial/courierNew/timesnewroman)
+      sh("scripts/build/ios/stage-fonts.sh")
 
-    # 4. Generate Xcode project + configure manual App Store signing
-    sh("cd #{IOS_DIR} && xcodegen generate --quiet")
-    UI.user_error!("Xcode project not generated at #{xcodeproj}") unless Dir.exist?(xcodeproj)
-    increment_build_number(
-      xcodeproj: xcodeproj,
-      build_number: ENV.fetch("GX_BUILD_NUMBER"),
-    )
-    update_code_signing_settings(
-      use_automatic_signing: false,
-      path:                  xcodeproj,
-      team_id:               TEAM_ID,
-      bundle_identifier:     bundle_id,
-      profile_name:          "match AppStore #{bundle_id}",
-      code_sign_identity:    "Apple Distribution",
-    )
+      # 4. Generate Xcode project + configure manual App Store signing
+      sh("cd #{IOS_DIR} && xcodegen generate --quiet")
+      UI.user_error!("Xcode project not generated at #{xcodeproj}") unless Dir.exist?(xcodeproj)
+      increment_build_number(
+        xcodeproj: xcodeproj,
+        build_number: ENV.fetch("GX_BUILD_NUMBER"),
+      )
+      update_code_signing_settings(
+        use_automatic_signing: false,
+        path:                  xcodeproj,
+        team_id:               TEAM_ID,
+        bundle_identifier:     bundle_id,
+        profile_name:          profile_name,
+        code_sign_identity:    certificate_name,
+      )
 
-    # 5. Build unsigned shell app; final signing uses the exact Match profile below.
-    sh(<<~SH)
-      xcodebuild \
-        -project #{xcodeproj} \
-        -scheme #{APP_NAME} \
-        -configuration Release \
-        -destination 'generic/platform=iOS' \
-        -derivedDataPath #{derived} \
-        DEVELOPMENT_TEAM=#{TEAM_ID} \
-        PRODUCT_BUNDLE_IDENTIFIER=#{bundle_id} \
-        CODE_SIGNING_ALLOWED=NO \
-        CODE_SIGNING_REQUIRED=NO \
-        CODE_SIGN_IDENTITY= \
-        build
-    SH
-    shell_app = "#{derived}/Build/Products/Release-iphoneos/#{APP_NAME}.app"
-    profile_path = match_profile_path(bundle_id)
+      # 5. Archive and export with Xcode/Fastlane so IPA metadata is App Store-ready.
+      UI.user_error!("MoltenVK.framework not found at #{mvk_fw} — "\
+                     "run scripts/build/ios/fetch-moltenvk.sh") unless Dir.exist?(mvk_fw)
+      ENV["GX_CMAKE_BUILD_DIR"] = File.expand_path(BUILD_DIR)
+      ENV["GX_MOLTENVK_ROOT"] = mvk_root
+      build_app(
+        GeneralsXReleaseConfig.build_app_options(
+          app_name: APP_NAME,
+          xcodeproj: xcodeproj,
+          derived_data_path: derived,
+          out_dir: OUT_DIR,
+          bundle_id: bundle_id,
+          team_id: TEAM_ID,
+          profile_name: profile_name,
+          certificate_name: certificate_name,
+          keychain_path: keychain.fetch(:path),
+        ),
+      )
+      ipa = File.expand_path("#{OUT_DIR}/#{APP_NAME}.ipa")
+      UI.user_error!("Fastlane did not export IPA at #{ipa}") unless File.file?(ipa)
 
-    # 6. Assemble final .app
-    engine_bin = "#{BUILD_DIR}/GeneralsMD/#{APP_NAME}.app/#{APP_NAME}"
-    sh("rm -rf #{OUT_DIR} && mkdir -p #{OUT_DIR}")
-    sh("cp -R #{shell_app} #{OUT_DIR}/")
-    app = "#{OUT_DIR}/#{APP_NAME}.app"
-    embedded_profile = File.join(app, "embedded.mobileprovision")
-
-    # Replace stub exe with real engine binary
-    sh("cp #{engine_bin} #{app}/#{APP_NAME}")
-    sh("cp #{profile_path.shellescape} #{embedded_profile.shellescape}")
-
-    # Embed runtime dylibs
-    sh("mkdir -p #{app}/Frameworks")
-    [
-      "#{BUILD_DIR}/_deps/dxvk-build-macos/src/d3d8/libdxvk_d3d8.0.dylib",
-      "#{BUILD_DIR}/_deps/dxvk-build-macos/src/d3d9/libdxvk_d3d9.0.dylib",
-      "#{BUILD_DIR}/_deps/sdl3-build/libSDL3.0.dylib",
-      "#{BUILD_DIR}/_deps/sdl3_image-build/libSDL3_image.0.dylib",
-      "#{BUILD_DIR}/_deps/openal_soft-build/libopenal.1.24.2.dylib",
-      "#{BUILD_DIR}/libgamespy.dylib",
-    ].each do |lib|
-      next unless File.exist?(lib)
-      sh("cp #{lib} #{app}/Frameworks/")
-    end
-    # openal install name is libopenal.1.dylib
-    sh("mv #{app}/Frameworks/libopenal.1.24.2.dylib "\
-       "#{app}/Frameworks/libopenal.1.dylib 2>/dev/null || true")
-
-    # Embed MoltenVK.framework (DXVK dlopens it at runtime)
-    UI.user_error!("MoltenVK.framework not found at #{mvk_fw} — "\
-                   "run scripts/build/ios/fetch-moltenvk.sh") unless Dir.exist?(mvk_fw)
-    sh("cp -R #{mvk_fw} #{app}/Frameworks/MoltenVK.framework")
-
-    # Fix rpath so dylibs resolve from bundle
-    sh("install_name_tool -add_rpath @executable_path/Frameworks "\
-       "#{app}/#{APP_NAME} 2>/dev/null || true")
-
-    # 7. Re-sign inside-out with App Store distribution identity
-    certificate_name = match_certificate_name(bundle_id)
-    entitlements = "#{OUT_DIR}/entitlements.plist"
-    profile_plist = "#{OUT_DIR}/profile.plist"
-    sh("security cms -D -i #{profile_path.shellescape} > #{profile_plist.shellescape}")
-    sh("/usr/libexec/PlistBuddy -x -c \"Print :Entitlements\" "\
-       "#{profile_plist.shellescape} > #{entitlements.shellescape}")
-    sign_id = GeneralsXSigningIdentity.resolve_codesign_identity(
-      profile_plist,
-      certificate_name: certificate_name,
-    )
-    UI.message("Using code signing identity #{sign_id} for #{certificate_name}")
-    frameworks = File.join(app, "Frameworks")
-    sign_arg = sign_id.shellescape
-    sh("find #{frameworks.shellescape} -name '*.dylib' "\
-       "-exec codesign --force --sign #{sign_arg} --timestamp=none {} \\;")
-    sh("codesign --force --sign #{sign_arg} --timestamp=none "\
-       "#{File.join(frameworks, 'MoltenVK.framework').shellescape}")
-    sh("codesign --force --sign #{sign_arg} --timestamp=none "\
-       "--entitlements #{entitlements.shellescape} #{app.shellescape}")
-    sh("codesign --verify --deep #{app} && echo '  signature OK'")
-
-    # 8. Wrap .app → .ipa
-    ipa = File.expand_path("#{OUT_DIR}/#{APP_NAME}.ipa")
-    sh(<<~SH)
-      rm -rf /tmp/gx-ipa-build
-      mkdir -p /tmp/gx-ipa-build/Payload
-      cp -R #{app} /tmp/gx-ipa-build/Payload/
-      (cd /tmp/gx-ipa-build && zip -qr '#{ipa}' Payload)
-      rm -rf /tmp/gx-ipa-build
-    SH
-
-    # 9. Upload to TestFlight
-    upload_options = {
-      ipa:                             ipa,
-      groups:                          [TESTFLIGHT_INTERNAL_GROUP],
-      distribute_external:             false,
-      skip_waiting_for_build_processing: false,
-    }
-    upload_options[:api_key] = api_key if api_key
-    upload_to_testflight(upload_options)
+      # 6. Upload to TestFlight
+      base_upload_options = {
+        ipa:                             ipa,
+        groups:                          [TESTFLIGHT_INTERNAL_GROUP],
+        distribute_external:             false,
+        skip_waiting_for_build_processing: false,
+      }
+      upload_options = if api_key
+        base_upload_options.merge(api_key: api_key)
+      else
+        GeneralsXUploadAuth.apple_id_upload_options(
+          base_upload_options,
+          bundle_id: bundle_id,
+          fallback_apple_id: APP_STORE_APP_ID,
+        )
+      end
+      upload_to_testflight(upload_options)
     end
   end
 
