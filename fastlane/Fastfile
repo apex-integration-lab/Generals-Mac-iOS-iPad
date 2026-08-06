@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "shellwords"
+require_relative "signing_identity"
 
 default_platform :ios
 
@@ -166,18 +167,25 @@ platform :ios do
        "#{app}/#{APP_NAME} 2>/dev/null || true")
 
     # 7. Re-sign inside-out with App Store distribution identity
-    sign_id      = match_certificate_name(bundle_id)
+    certificate_name = match_certificate_name(bundle_id)
     entitlements = "#{OUT_DIR}/entitlements.plist"
     profile_plist = "#{OUT_DIR}/profile.plist"
     sh("security cms -D -i #{profile_path.shellescape} > #{profile_plist.shellescape}")
     sh("/usr/libexec/PlistBuddy -x -c \"Print :Entitlements\" "\
        "#{profile_plist.shellescape} > #{entitlements.shellescape}")
-    sh("find #{app}/Frameworks -name '*.dylib' "\
-       "-exec codesign --force --sign '#{sign_id}' --timestamp=none {} \\;")
-    sh("codesign --force --sign '#{sign_id}' --timestamp=none "\
-       "#{app}/Frameworks/MoltenVK.framework")
-    sh("codesign --force --sign '#{sign_id}' --timestamp=none "\
-       "--entitlements #{entitlements} #{app}")
+    sign_id = GeneralsXSigningIdentity.resolve_codesign_identity(
+      profile_plist,
+      certificate_name: certificate_name,
+    )
+    UI.message("Using code signing identity #{sign_id} for #{certificate_name}")
+    frameworks = File.join(app, "Frameworks")
+    sign_arg = sign_id.shellescape
+    sh("find #{frameworks.shellescape} -name '*.dylib' "\
+       "-exec codesign --force --sign #{sign_arg} --timestamp=none {} \\;")
+    sh("codesign --force --sign #{sign_arg} --timestamp=none "\
+       "#{File.join(frameworks, 'MoltenVK.framework').shellescape}")
+    sh("codesign --force --sign #{sign_arg} --timestamp=none "\
+       "--entitlements #{entitlements.shellescape} #{app.shellescape}")
     sh("codesign --verify --deep #{app} && echo '  signature OK'")
 
     # 8. Wrap .app → .ipa

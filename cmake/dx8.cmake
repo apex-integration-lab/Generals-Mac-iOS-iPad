@@ -91,7 +91,7 @@ elseif(APPLE AND SAGE_USE_MOLTENVK)
   elseif(CMAKE_SYSTEM_NAME STREQUAL "iOS")
     # The remote clone has no way to receive the iOS patch; a silent fallback
     # here previously produced dylibs that die at Vulkan init on device.
-    message(FATAL_ERROR "iOS DXVK requires the local fork submodule. Run: git submodule update --init references/fbraz3-dxvk")
+    message(FATAL_ERROR "iOS DXVK requires the local fork submodule. Run: git submodule update --init --recursive references/fbraz3-dxvk")
   else()
     set(DXVK_SOURCE_DIR "${CMAKE_BINARY_DIR}/_deps/dxvk-src-fbraz3")
     message(STATUS "DXVK macOS build: using GitHub source clone at ${DXVK_SOURCE_DIR}")
@@ -144,6 +144,17 @@ elseif(APPLE AND SAGE_USE_MOLTENVK)
       message(STATUS "  VULKAN_SDK checked: ${VULKAN_SDK_ENV}")
     endif()
     set(VULKAN_SDK_ENV_VAR "")
+  endif()
+
+  # GeneralsX @build Codex 06/08/2026 Pass LunarG Vulkan headers into the iOS Meson cross file.
+  set(DXVK_VULKAN_MESON_INCLUDE_ARGS "")
+  if(VULKAN_SDK_ENV AND EXISTS "${VULKAN_SDK_ENV}/include/vulkan/vulkan.h")
+    set(DXVK_VULKAN_INCLUDE_DIR_MESON "${VULKAN_SDK_ENV}/include")
+    string(REPLACE "\\" "\\\\" DXVK_VULKAN_INCLUDE_DIR_MESON "${DXVK_VULKAN_INCLUDE_DIR_MESON}")
+    string(REPLACE "'" "\\'" DXVK_VULKAN_INCLUDE_DIR_MESON "${DXVK_VULKAN_INCLUDE_DIR_MESON}")
+    set(DXVK_VULKAN_MESON_INCLUDE_ARGS ", '-I${DXVK_VULKAN_INCLUDE_DIR_MESON}'")
+  elseif(CMAKE_SYSTEM_NAME STREQUAL "iOS")
+    message(FATAL_ERROR "iOS DXVK build requires Vulkan headers at ${VULKAN_SDK_ENV}/include/vulkan/vulkan.h. Set VULKAN_SDK to the LunarG Vulkan SDK macOS directory.")
   endif()
 
   # iOS cross-compiles DXVK with a meson cross file (iPhoneOS sysroot); macOS uses
