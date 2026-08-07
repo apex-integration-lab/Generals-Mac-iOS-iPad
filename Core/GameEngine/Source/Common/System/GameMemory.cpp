@@ -3308,6 +3308,14 @@ void operator delete(void *p)
 	TheDynamicMemoryAllocator->freeBytes(p);
 }
 
+#if __cplusplus >= 201402L
+// GeneralsX @bugfix Codex 07/08/2026 Route libc++ sized deletes back to the allocator that supplied the memory.
+void operator delete(void *p, size_t) noexcept
+{
+	::operator delete(p);
+}
+#endif
+
 //-----------------------------------------------------------------------------
 /**
 	overload for global operator delete[]; send requests to TheDynamicMemoryAllocator.
@@ -3319,6 +3327,14 @@ void operator delete[](void *p)
 	DEBUG_ASSERTCRASH(TheDynamicMemoryAllocator != nullptr, ("must init memory manager before calling global operator delete"));
 	TheDynamicMemoryAllocator->freeBytes(p);
 }
+
+#if __cplusplus >= 201402L
+// GeneralsX @bugfix Codex 07/08/2026 Route libc++ sized array deletes through the game allocator too.
+void operator delete[](void *p, size_t) noexcept
+{
+	::operator delete[](p);
+}
+#endif
 
 //-----------------------------------------------------------------------------
 /**

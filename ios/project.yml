@@ -29,6 +29,8 @@ targets:
         TARGETED_DEVICE_FAMILY: "1,2"
         INFOPLIST_KEY_UIRequiresFullScreen: YES
         ENABLE_BITCODE: NO
+        # GeneralsX @bugfix Codex 07/08/2026 Preserve allocator exports in the staged engine during Xcode archives.
+        STRIP_INSTALLED_PRODUCT: NO
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
     info:
       path: Stub/Info.plist
@@ -79,6 +81,64 @@ targets:
             fi
           }
 
+          package_runtime_framework() {
+            src="$1"
+            framework_name="$2"
+            executable_name="$3"
+            bundle_suffix="$4"
+            framework_dir="${FRAMEWORKS_DIR}/${framework_name}.framework"
+            framework_binary="${framework_dir}/${executable_name}"
+            if [ ! -e "${src}" ]; then
+              echo "error: required iOS runtime input missing: ${src}" >&2
+              exit 1
+            fi
+            rm -rf "${framework_dir}"
+            mkdir -p "${framework_dir}"
+            cp -f "${src}" "${framework_binary}"
+            /usr/bin/install_name_tool \
+              -id "@rpath/${framework_name}.framework/${executable_name}" \
+              "${framework_binary}"
+            cat > "${framework_dir}/Info.plist" <<PLIST
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>CFBundleDevelopmentRegion</key>
+            <string>en</string>
+            <key>CFBundleExecutable</key>
+            <string>${executable_name}</string>
+            <key>CFBundleIdentifier</key>
+            <string>${PRODUCT_BUNDLE_IDENTIFIER}.runtime.${bundle_suffix}</string>
+            <key>CFBundleInfoDictionaryVersion</key>
+            <string>6.0</string>
+            <key>CFBundleName</key>
+            <string>${framework_name}</string>
+            <key>CFBundlePackageType</key>
+            <string>FMWK</string>
+            <key>CFBundleShortVersionString</key>
+            <string>1.0</string>
+            <key>CFBundleVersion</key>
+            <string>1</string>
+            <key>MinimumOSVersion</key>
+            <string>${IPHONEOS_DEPLOYMENT_TARGET:-16.0}</string>
+          </dict>
+          </plist>
+          PLIST
+          }
+
+          change_load_command() {
+            binary="$1"
+            old_name="$2"
+            new_name="$3"
+            /usr/bin/install_name_tool -change "${old_name}" "${new_name}" "${binary}" 2>/dev/null || true
+          }
+
+          remove_build_rpath() {
+            binary="$1"
+            build_rpath="$2"
+            /usr/bin/install_name_tool -delete_rpath "${build_rpath}" "${binary}" 2>/dev/null || true
+          }
+
           codesign_runtime() {
             item="$1"
             if [ "${CODE_SIGNING_ALLOWED:-YES}" = "NO" ] || [ -z "${EXPANDED_CODE_SIGN_IDENTITY:-}" ]; then
@@ -88,18 +148,38 @@ targets:
           }
 
           mkdir -p "${APP_DIR}" "${FRAMEWORKS_DIR}"
+          rm -f "${FRAMEWORKS_DIR}/"*.dylib
           copy_required "${ENGINE_BIN}" "${APP_DIR}/${EXECUTABLE_NAME}"
-          copy_required "${DXVK_BUILD}/src/d3d8/libdxvk_d3d8.0.dylib" "${FRAMEWORKS_DIR}/libdxvk_d3d8.0.dylib"
-          copy_required "${DXVK_BUILD}/src/d3d9/libdxvk_d3d9.0.dylib" "${FRAMEWORKS_DIR}/libdxvk_d3d9.0.dylib"
-          copy_required "${CMAKE_BUILD_DIR}/_deps/sdl3-build/libSDL3.0.dylib" "${FRAMEWORKS_DIR}/libSDL3.0.dylib"
-          copy_required "${CMAKE_BUILD_DIR}/_deps/sdl3_image-build/libSDL3_image.0.dylib" "${FRAMEWORKS_DIR}/libSDL3_image.0.dylib"
-          copy_required "${CMAKE_BUILD_DIR}/_deps/openal_soft-build/libopenal.1.24.2.dylib" "${FRAMEWORKS_DIR}/libopenal.1.dylib"
-          copy_required "${CMAKE_BUILD_DIR}/libgamespy.dylib" "${FRAMEWORKS_DIR}/libgamespy.dylib"
+          # GeneralsX @build Codex 06/08/2026 Package non-Swift iOS runtime dylibs as frameworks for App Store validation.
+          package_runtime_framework "${DXVK_BUILD}/src/d3d8/libdxvk_d3d8.0.dylib" "DXVKD3D8" "DXVKD3D8" "dxvkd3d8"
+          package_runtime_framework "${DXVK_BUILD}/src/d3d9/libdxvk_d3d9.0.dylib" "DXVKD3D9" "DXVKD3D9" "dxvkd3d9"
+          package_runtime_framework "${CMAKE_BUILD_DIR}/_deps/sdl3-build/libSDL3.0.dylib" "SDL3" "SDL3" "sdl3"
+          package_runtime_framework "${CMAKE_BUILD_DIR}/_deps/sdl3_image-build/libSDL3_image.0.dylib" "SDL3Image" "SDL3Image" "sdl3image"
+          package_runtime_framework "${CMAKE_BUILD_DIR}/_deps/openal_soft-build/libopenal.1.24.2.dylib" "OpenAL" "OpenAL" "openal"
+          package_runtime_framework "${CMAKE_BUILD_DIR}/libgamespy.dylib" "GameSpy" "GameSpy" "gamespy"
           copy_required "${MVK_FRAMEWORK}" "${FRAMEWORKS_DIR}/MoltenVK.framework"
 
+          # GeneralsX @bugfix Codex 06/08/2026 Never package host build paths that can load a second SDL copy in Simulator.
+          remove_build_rpath "${APP_DIR}/${EXECUTABLE_NAME}" "${CMAKE_BUILD_DIR}/_deps/sdl3_image-build"
+          remove_build_rpath "${APP_DIR}/${EXECUTABLE_NAME}" "${CMAKE_BUILD_DIR}/_deps/sdl3-build"
+          remove_build_rpath "${APP_DIR}/${EXECUTABLE_NAME}" "${CMAKE_BUILD_DIR}"
+          remove_build_rpath "${APP_DIR}/${EXECUTABLE_NAME}" "${CMAKE_BUILD_DIR}/_deps/openal_soft-build"
           /usr/bin/install_name_tool -add_rpath "@executable_path/Frameworks" "${APP_DIR}/${EXECUTABLE_NAME}" 2>/dev/null || true
+          change_load_command "${APP_DIR}/${EXECUTABLE_NAME}" "@rpath/libSDL3_image.0.dylib" "@rpath/SDL3Image.framework/SDL3Image"
+          change_load_command "${APP_DIR}/${EXECUTABLE_NAME}" "@rpath/libSDL3.0.dylib" "@rpath/SDL3.framework/SDL3"
+          change_load_command "${APP_DIR}/${EXECUTABLE_NAME}" "@rpath/libgamespy.dylib" "@rpath/GameSpy.framework/GameSpy"
+          change_load_command "${APP_DIR}/${EXECUTABLE_NAME}" "@rpath/libopenal.1.dylib" "@rpath/OpenAL.framework/OpenAL"
+          change_load_command "${FRAMEWORKS_DIR}/DXVKD3D8.framework/DXVKD3D8" "@rpath/libdxvk_d3d9.0.dylib" "@rpath/DXVKD3D9.framework/DXVKD3D9"
+          change_load_command "${FRAMEWORKS_DIR}/SDL3Image.framework/SDL3Image" "@rpath/libSDL3.0.dylib" "@rpath/SDL3.framework/SDL3"
 
-          for item in "${FRAMEWORKS_DIR}/"*.dylib "${FRAMEWORKS_DIR}/"*.framework; do
+          if [ "${DEBUG_INFORMATION_FORMAT:-}" = "dwarf-with-dsym" ]; then
+            ENGINE_DSYM="${DWARF_DSYM_FOLDER_PATH}/${DWARF_DSYM_FILE_NAME}"
+            rm -rf "${ENGINE_DSYM}"
+            # GeneralsX @build Codex 07/08/2026 Replace the wrapper dSYM with symbols for the staged engine executable.
+            /usr/bin/xcrun dsymutil "${APP_DIR}/${EXECUTABLE_NAME}" -o "${ENGINE_DSYM}"
+          fi
+
+          for item in "${FRAMEWORKS_DIR}/"*.framework; do
             [ -e "${item}" ] || continue
             codesign_runtime "${item}"
           done

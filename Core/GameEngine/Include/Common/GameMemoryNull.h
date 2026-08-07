@@ -155,6 +155,12 @@ extern void __cdecl operator delete(void *p);
 extern void * __cdecl operator new[](size_t size);
 extern void __cdecl operator delete[](void *p);
 
+#if __cplusplus >= 201402L
+// GeneralsX @bugfix Codex 07/08/2026 Match modern sized deletes to the null allocator.
+extern void __cdecl operator delete(void *p, size_t size) noexcept;
+extern void __cdecl operator delete[](void *p, size_t size) noexcept;
+#endif
+
 // additional overloads to account for VC/MFC funky versions
 extern void* __cdecl operator new(size_t size, const char *, int);
 extern void __cdecl operator delete(void *p, const char *, int);

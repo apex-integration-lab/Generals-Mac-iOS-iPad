@@ -177,6 +177,14 @@ extern void __cdecl operator delete(void *p)
 	free(p);
 }
 
+#if __cplusplus >= 201402L
+// GeneralsX @bugfix Codex 07/08/2026 Keep sized deallocation paired with the null allocator.
+extern void __cdecl operator delete(void *p, size_t) noexcept
+{
+	::operator delete(p);
+}
+#endif
+
 extern void * __cdecl operator new[](size_t size)
 {
 	void *p = malloc(size);
@@ -190,6 +198,14 @@ extern void __cdecl operator delete[](void *p)
 {
 	free(p);
 }
+
+#if __cplusplus >= 201402L
+// GeneralsX @bugfix Codex 07/08/2026 Keep sized array deallocation paired with the null allocator.
+extern void __cdecl operator delete[](void *p, size_t) noexcept
+{
+	::operator delete[](p);
+}
+#endif
 
 // additional overloads to account for VC/MFC funky versions
 extern void* __cdecl operator new(size_t size, const char *, int)

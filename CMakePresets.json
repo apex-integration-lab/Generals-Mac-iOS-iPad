@@ -278,6 +278,19 @@
             "environment": {
                 "PKG_CONFIG_PATH": ""
             }
+        },
+        {
+            "name": "ios-simulator",
+            "displayName": "iOS Simulator (MoltenVK + SDL3 + OpenAL) arm64",
+            "inherits": "ios-vulkan",
+            "binaryDir": "${sourceDir}/build/${presetName}",
+            "description": "Local arm64 iOS Simulator build used to reproduce startup failures without a physical device.",
+            "cacheVariables": {
+                "CMAKE_OSX_SYSROOT": "iphonesimulator",
+                "VCPKG_TARGET_TRIPLET": "arm64-ios-simulator",
+                "Vulkan_LIBRARY": "$env{VULKAN_SDK}/lib/MoltenVK.xcframework/ios-arm64_x86_64-simulator/libMoltenVK.a",
+                "Vulkan_MoltenVK_LIBRARY": "$env{VULKAN_SDK}/lib/MoltenVK.xcframework/ios-arm64_x86_64-simulator/libMoltenVK.a"
+            }
         }
     ],
     "buildPresets": [

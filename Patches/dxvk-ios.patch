@@ -1,16 +1,25 @@
 # DXVK iOS patch
 #
 # Local modifications to references/fbraz3-dxvk (at 46a3bc01) used to
-# build the libdxvk_d3d8/d3d9 dylibs that package-ios-zh.sh embeds: dlopen MoltenVK from
-# the app bundle's Frameworks directory, and SDL3 WSI fixes for the iOS drawable.
+# build the libdxvk_d3d8/d3d9 dylibs that package-ios-zh.sh embeds: reuse
+# statically linked MoltenVK, load bundled SDL3, and use drawable pixel sizes.
 # Apply with: git -C references/fbraz3-dxvk apply ../../Patches/dxvk-ios.patch
 # Then build with: meson setup --cross-file cmake/meson-arm64-ios-cross.ini ...
 diff --git a/src/vulkan/vulkan_loader.cpp b/src/vulkan/vulkan_loader.cpp
-index 518efcb1..a70ea8fb 100644
+index 518efcb1..6147488e 100644
 --- a/src/vulkan/vulkan_loader.cpp
 +++ b/src/vulkan/vulkan_loader.cpp
-@@ -18,7 +18,12 @@ namespace dxvk::vk {
+@@ -16,9 +16,21 @@ namespace dxvk::vk {
+       "vulkan-1.dll",
+     }};
  #elif defined(__APPLE__)
++    // GeneralsX @bugfix Codex 06/08/2026 Reuse MoltenVK when iOS linked it statically into the app executable.
++    auto linkedProc = dlsym(RTLD_DEFAULT, "vkGetInstanceProcAddr");
++    if (linkedProc) {
++      Logger::info(str::format("Vulkan: Found statically linked vkGetInstanceProcAddr @ 0x", std::hex, reinterpret_cast<uintptr_t>(linkedProc)));
++      return std::make_pair(nullptr, reinterpret_cast<PFN_vkGetInstanceProcAddr>(linkedProc));
++    }
++
      // macOS: try the Vulkan loader (from Vulkan SDK) and MoltenVK directly.
      // LoadLibraryA() maps to dlopen() on non-Windows DXVK native builds.
 -    static const std::array<const char*, 3> dllNames = {{
@@ -23,6 +32,40 @@ index 518efcb1..a70ea8fb 100644
        "libvulkan.dylib",
        "libvulkan.1.dylib",
        "libMoltenVK.dylib",
+@@ -65,6 +77,9 @@ namespace dxvk::vk {
+   }
+
+   PFN_vkVoidFunction LibraryLoader::sym(VkInstance instance, const char* name) const {
++    // GeneralsX @bugfix Codex 06/08/2026 Report an unavailable Vulkan loader instead of calling through null.
++    if (!m_getInstanceProcAddr)
++      return nullptr;
+     return m_getInstanceProcAddr(instance, name);
+   }
+
+diff --git a/src/wsi/sdl3/wsi_platform_sdl3.cpp b/src/wsi/sdl3/wsi_platform_sdl3.cpp
+index 9975cdac..6005e942 100644
+--- a/src/wsi/sdl3/wsi_platform_sdl3.cpp
++++ b/src/wsi/sdl3/wsi_platform_sdl3.cpp
+@@ -7,12 +7,19 @@
+
+ #include <SDL3/SDL_vulkan.h>
+
++#if defined(__APPLE__)
++#include <TargetConditionals.h>
++#endif
++
+ namespace dxvk::wsi {
+
+   Sdl3WsiDriver::Sdl3WsiDriver() {
+     libsdl = LoadLibraryA( // FIXME: Get soname as string from meson
+ #if defined(_WIN32)
+         "SDL3.dll"
++#elif defined(__APPLE__) && TARGET_OS_IPHONE
++        // GeneralsX @bugfix Codex 06/08/2026 Load the App Store-safe embedded framework on iOS.
++        "@rpath/SDL3.framework/SDL3"
+ #elif defined(__APPLE__)
+         "libSDL3.0.dylib"
+ #else
 diff --git a/src/wsi/sdl3/wsi_platform_sdl3_funcs.h b/src/wsi/sdl3/wsi_platform_sdl3_funcs.h
 index 624c2193..feb5f61a 100644
 --- a/src/wsi/sdl3/wsi_platform_sdl3_funcs.h
@@ -42,7 +85,7 @@ index 10fca478..be0828f5 100644
 @@ -22,8 +22,12 @@ namespace dxvk::wsi {
      int w = 0;
      int h = 0;
- 
+
 -    if (!SDL_GetWindowSize(window, &w, &h))
 -      Logger::err(str::format("SDL3 WSI: SDL_GetWindowSize: ", SDL_GetError()));
 +    // Pixels, not points: on high-DPI displays (iOS high-pixel-density windows)
@@ -51,6 +94,6 @@ index 10fca478..be0828f5 100644
 +    // surface. Identical to points wherever no scale factor applies.
 +    if (!SDL_GetWindowSizeInPixels(window, &w, &h))
 +      Logger::err(str::format("SDL3 WSI: SDL_GetWindowSizeInPixels: ", SDL_GetError()));
- 
+
      if (pWidth)
        *pWidth = uint32_t(w);

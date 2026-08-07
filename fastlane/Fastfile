@@ -26,6 +26,18 @@ def match_profile_name(bundle_id)
   ENV.fetch(match_env_name(bundle_id, "profile-name"), "match AppStore #{bundle_id}")
 end
 
+def validate_ipa_swift_support!(ipa)
+  GeneralsXReleaseConfig.validate_ipa_swift_support!(ipa)
+rescue GeneralsXReleaseConfig::Error => error
+  UI.user_error!(error.message)
+end
+
+def validate_archive_dsym!(archive)
+  GeneralsXReleaseConfig.validate_archive_dsym!(archive, app_name: APP_NAME)
+rescue GeneralsXReleaseConfig::Error => error
+  UI.user_error!(error.message)
+end
+
 platform :ios do
   private_lane :prepare_release_keychain do
     keychain_name = GeneralsXReleaseConfig.keychain_name
@@ -73,20 +85,9 @@ platform :ios do
       )
     end
 
-    required = %w[
-      APP_STORE_CONNECT_API_KEY_ID
-      APP_STORE_CONNECT_ISSUER_ID
-      APP_STORE_CONNECT_API_KEY_BASE64
-    ]
-    missing = required.reject { |key| ENV[key] && !ENV[key].empty? }
-    UI.user_error!("Missing App Store Connect API-key secrets: #{missing.join(', ')}") unless missing.empty?
-
-    app_store_connect_api_key(
-      key_id:                   ENV.fetch("APP_STORE_CONNECT_API_KEY_ID"),
-      issuer_id:                ENV.fetch("APP_STORE_CONNECT_ISSUER_ID"),
-      key_content:              ENV.fetch("APP_STORE_CONNECT_API_KEY_BASE64"),
-      is_key_content_base64:    true,
-    )
+    app_store_connect_api_key(GeneralsXReleaseConfig.app_store_connect_api_key_options)
+  rescue GeneralsXReleaseConfig::Error => error
+    UI.user_error!(error.message)
   end
 
   private_lane :sync_appstore_signing do |options|
@@ -115,6 +116,7 @@ platform :ios do
   # ── Full build + TestFlight upload ────────────────────────────────────────
   desc "Build engine, package iOS app, upload to TestFlight (no bundled assets)"
   lane :beta do
+    GeneralsXReleaseConfig.apply_ios_build_defaults!
     bundle_id = ENV.fetch("GX_BUNDLE_ID", "com.aaron.generalszh")
     api_key = app_store_connect_key(allow_apple_id_upload: true)
     keychain = prepare_release_keychain
@@ -181,16 +183,18 @@ platform :ios do
           keychain_path: keychain.fetch(:path),
         ),
       )
+      archive = File.expand_path("#{OUT_DIR}/#{APP_NAME}.xcarchive")
+      validate_archive_dsym!(archive)
       ipa = File.expand_path("#{OUT_DIR}/#{APP_NAME}.ipa")
       UI.user_error!("Fastlane did not export IPA at #{ipa}") unless File.file?(ipa)
+      # GeneralsX @build Codex 06/08/2026 Fail before upload if App Store SwiftSupport is missing.
+      validate_ipa_swift_support!(ipa)
 
       # 6. Upload to TestFlight
-      base_upload_options = {
-        ipa:                             ipa,
-        groups:                          [TESTFLIGHT_INTERNAL_GROUP],
-        distribute_external:             false,
-        skip_waiting_for_build_processing: false,
-      }
+      base_upload_options = GeneralsXReleaseConfig.testflight_upload_options(
+        ipa: ipa,
+        default_group: TESTFLIGHT_INTERNAL_GROUP,
+      )
       upload_options = if api_key
         base_upload_options.merge(api_key: api_key)
       else

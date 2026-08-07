@@ -864,6 +864,12 @@ extern void userMemoryAdjustPoolSize(const char *poolName, Int& initialAllocatio
 	extern void * __cdecl operator new[]	(size_t size);
 	extern void __cdecl operator delete[]	(void *p);
 
+	#if __cplusplus >= 201402L
+	// GeneralsX @bugfix Codex 07/08/2026 Keep sized deallocation on the game allocator.
+	extern void __cdecl operator delete		(void *p, size_t size) noexcept;
+	extern void __cdecl operator delete[]	(void *p, size_t size) noexcept;
+	#endif
+
 	// additional overloads to account for VC/MFC funky versions
 	extern void* __cdecl operator new(size_t nSize, const char *, int);
 	extern void __cdecl operator delete(void *, const char *, int);

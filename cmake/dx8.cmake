@@ -160,9 +160,17 @@ elseif(APPLE AND SAGE_USE_MOLTENVK)
   # iOS cross-compiles DXVK with a meson cross file (iPhoneOS sysroot); macOS uses
   # the native file. Arch/sysroot flags come from the machine file in both cases.
   if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
-    # The cross file is generated from a template so the iPhoneOS SDK path comes
+    # GeneralsX @build Codex 06/08/2026 Select the physical-device or Simulator SDK from the active preset.
+    if(CMAKE_OSX_SYSROOT MATCHES "[Ii][Pp]hone[Ss]imulator")
+      set(IOS_SDK_NAME iphonesimulator)
+      set(IOS_DEPLOYMENT_FLAG -mios-simulator-version-min=${CMAKE_OSX_DEPLOYMENT_TARGET})
+    else()
+      set(IOS_SDK_NAME iphoneos)
+      set(IOS_DEPLOYMENT_FLAG -miphoneos-version-min=${CMAKE_OSX_DEPLOYMENT_TARGET})
+    endif()
+    # The cross file is generated from a template so the selected SDK path comes
     # from xcrun (Xcode-beta / renamed installs) instead of a hardcoded Xcode.app.
-    execute_process(COMMAND xcrun --sdk iphoneos --show-sdk-path
+    execute_process(COMMAND xcrun --sdk ${IOS_SDK_NAME} --show-sdk-path
                     OUTPUT_VARIABLE IOS_SDK OUTPUT_STRIP_TRAILING_WHITESPACE
                     COMMAND_ERROR_IS_FATAL ANY)
     configure_file(${CMAKE_SOURCE_DIR}/cmake/meson-arm64-ios-cross.ini.in

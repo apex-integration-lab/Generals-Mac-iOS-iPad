@@ -580,7 +580,8 @@ bool DX8Wrapper::Init(void * hwnd, bool lite)
 		// load from the embedded Frameworks directory explicitly. macOS keeps the
 		// bare name (resolved via DYLD_LIBRARY_PATH set by run.sh).
 		#if defined(TARGET_OS_IPHONE) && TARGET_OS_IPHONE
-		D3D8Lib = LoadLibrary("@executable_path/Frameworks/libdxvk_d3d8.0.dylib");
+		// GeneralsX @build Codex 06/08/2026 Load the App Store-valid framework wrapper on iOS.
+		D3D8Lib = LoadLibrary("@executable_path/Frameworks/DXVKD3D8.framework/DXVKD3D8");
 		#else
 		D3D8Lib = LoadLibrary("libdxvk_d3d8.dylib");
 		#endif
